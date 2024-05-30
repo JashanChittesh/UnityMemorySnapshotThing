@@ -202,42 +202,49 @@ public readonly struct ManagedClassInstance
         return false;
     }
 
-    public string GetFirstObservedRetentionPath(SnapshotFile file)
+    public string GetFirstObservedRetentionPath(SnapshotFile file, LeakSummary leakSummary)
     {
         var name = file.GetTypeName(TypeInfo.TypeIndex);
 
         var sb = new StringBuilder(name);
         sb.Append(" at 0x").Append(ObjectAddress.ToString("X"));
-        sb.Append(" (target) <- ");
+        sb.Append(" (target)").AppendLine().Append("    <- ");
+
+        var sbCurrentReason = new StringBuilder();
+        RetentionReason lastReason = new() { Path = $"ROOT {name}" };
 
         var parent = TypedParent;
-        AppendRetentionReason(sb, file, this, parent);
+        lastReason = AppendRetentionReason(sbCurrentReason, sb, leakSummary, file, this, parent, lastReason);
         
         while (parent.IsInitialized)
         {
             var child = parent;
             parent = child.TypedParent;
-            AppendRetentionReason(sb, file, child, parent);
+            sbCurrentReason.Length = 0;
+            lastReason = AppendRetentionReason(sbCurrentReason, sb, leakSummary, file, child, parent, lastReason);
         }
 
         return sb.ToString();
     }
 
-    private void AppendRetentionReason(StringBuilder sb, SnapshotFile file, ManagedClassInstance child, ManagedClassInstance parent)
+    private RetentionReason AppendRetentionReason(StringBuilder sbCurrentReason, StringBuilder sb, LeakSummary leakSummary, SnapshotFile file, ManagedClassInstance child, ManagedClassInstance parent, RetentionReason lastReason)
     {
+        RetentionReason currentReason = new() { Path = string.Empty };
         switch (child.LoadedReason)
         {
             case LoadedReason.GcRoot:
-                sb.Append("GC Root");
-                return;
+                sbCurrentReason.Append("GC Root");
+                currentReason.Path = sbCurrentReason.ToString();
+                break;
             case LoadedReason.StaticField:
             {
                 var staticFieldDeclaringType = file.StaticFieldsToOwningTypes[child.FieldIndexOrArrayOffset];
                 var fieldList = file.GetStaticFieldInfoForTypeIndex(staticFieldDeclaringType);
                 var parentName = file.GetTypeName(staticFieldDeclaringType);
                 var field = fieldList.First(f => f.FieldIndex == child.FieldIndexOrArrayOffset);
-                sb.Append("Static Field ").Append(file.GetFieldName(field.FieldIndex)).Append(" of ");
-                sb.Append(parentName);
+                sbCurrentReason.Append("Static Field ").Append(file.GetFieldName(field.FieldIndex)).Append(" of ");
+                sbCurrentReason.Append(parentName);
+                currentReason.Path = sbCurrentReason.ToString();
                 break;
             }
             case LoadedReason.InstanceField:
@@ -245,33 +252,52 @@ public readonly struct ManagedClassInstance
                 var fieldList = file.GetInstanceFieldInfoForTypeIndex(parent.TypeInfo.TypeIndex);
                 var parentName = file.GetTypeName(parent.TypeInfo.TypeIndex);
                 var field = fieldList.First(f => f.FieldIndex == child.FieldIndexOrArrayOffset);
-                sb.Append("Field ").Append(file.GetFieldName(field.FieldIndex)).Append(" of ");
-                sb.Append(parentName).Append(" at 0x").Append(parent.ObjectAddress.ToString("X"));
+                sbCurrentReason.Append("Field ").Append(file.GetFieldName(field.FieldIndex)).Append(" of ");
+                sbCurrentReason.Append(parentName);
+                currentReason.Path = sbCurrentReason.ToString(); // just that, we don't want the addresses to break the hash
+                
+                sbCurrentReason.Append(" at 0x").Append(parent.ObjectAddress.ToString("X"));
 
                 if (parent.InheritsFromUnityEngineObject(file))
                 {
                     var parentInst = file.GetOrCreateManagedClassInstance(parent.ObjectAddress);
                     
                     if (parentInst.HasValue && parentInst.Value.IsLeakedManagedShell(file))
-                        sb.Append(" (leaked managed shell)");
+                    {
+                        sbCurrentReason.Append(" (leaked managed shell)");
+                        currentReason.IsLeakedShell = true;
+                        leakSummary.RegisterLeakingShell(currentReason.Path); // we want *this* line
+                    } 
                     else
-                        sb.Append(" (unity object, non-leaked)");
+                    {
+                        sbCurrentReason.Append(" (unity object, non-leaked)");
+                        currentReason.IsNonLeakedObject = true;
+                        if (!lastReason.IsNonLeakedObject) // previous wasn't, this one is => we should have a look
+                        {
+                            leakSummary.RegisterLeakingUnityObject(currentReason.Path); // we want the *previous* line
+                        }
+                    }
                 }
 
-                sb.Append(" <- ");
+                sbCurrentReason.AppendLine().Append("    <- ");
                 break;
             }
             case LoadedReason.ArrayElement:
             {
                 var parentName = file.GetTypeName(parent.TypeInfo.TypeIndex);
-                sb.Append("Array Element ").Append(child.FieldIndexOrArrayOffset).Append(" of ");
-                sb.Append(parentName).Append(" at 0x").Append(parent.ObjectAddress.ToString("X"));
-                sb.Append(" <- ");
+                sbCurrentReason.Append("Array Element ").Append(child.FieldIndexOrArrayOffset).Append(" of ");
+                sbCurrentReason.Append(parentName);
+                currentReason.Path = sbCurrentReason.ToString(); // just that, we don't want the addresses to break the hash
+
+                sbCurrentReason.Append(" at 0x").Append(parent.ObjectAddress.ToString("X"));
+                sbCurrentReason.AppendLine().Append("    <- ");
                 break;
             }
             default:
                 throw new ArgumentOutOfRangeException(nameof(child), "Invalid LoadedReason");
         }
+        sb.Append(sbCurrentReason);
+        return currentReason;
     }
     
     public bool IsLeakedManagedShell(SnapshotFile file)
