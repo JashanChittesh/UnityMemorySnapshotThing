@@ -113,13 +113,21 @@ public class SnapshotFile : LowLevelSnapshotFile
         if (_managedClassInstanceCache.TryGetValue(address, out var ret))
             return ret;
         
-        var info = ParseManagedObjectInfo(address);
-        if (!info.IsKnownType)
-            return null;
+        try 
+        {
+            var info = ParseManagedObjectInfo(address);
+            if (!info.IsKnownType)
+                return null;
 
-        var instance = new ManagedClassInstance(this, info, parent, depth, reason, fieldOrArrayIdx);
-        _managedClassInstanceCache[address] = instance;
-        return instance;
+            var instance = new ManagedClassInstance(this, info, parent, depth, reason, fieldOrArrayIdx);
+            _managedClassInstanceCache[address] = instance;
+            return instance;
+        }
+        catch (Exception exc) 
+        {
+            Console.WriteLine($"Failed to parse managed object info at {address:X}: {exc.Message}");
+            return null;
+        }
     }
 
     public RawManagedObjectInfo ParseManagedObjectInfo(ulong address)
