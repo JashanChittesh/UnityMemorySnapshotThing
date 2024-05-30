@@ -83,8 +83,8 @@ public static class Program
         
         var detectStart = DateTime.Now;
 
-        int numLeaked = 0;
-        var leakedTypes = new Dictionary<string, int>();
+        var leakSummary = new LeakSummary();
+
         foreach (var managedClassInstance in unityEngineObjects)
         {
             if (managedClassInstance.IsLeakedManagedShell(file))
@@ -95,27 +95,31 @@ public static class Program
                 Console.WriteLine(str);
                 ret.AppendLine(str);
 
-                str = $"    Retention Path: {managedClassInstance.GetFirstObservedRetentionPath(file)}";
+                str = $"    Retention Path: {managedClassInstance.GetFirstObservedRetentionPath(file, leakSummary)}";
                 Console.WriteLine(str);
-                ret.AppendLine(str);
-                        
-                leakedTypes[typeName] = leakedTypes.GetValueOrDefault(typeName) + 1;
-                        
-                numLeaked++;
+                Console.WriteLine();
+                ret.AppendLine(str).AppendLine();
+
+                leakSummary.IncrementLeaked(typeName);
             }
         }
 
-        str = $"Finished detection in {(DateTime.Now - detectStart).TotalMilliseconds} ms. {numLeaked} of those are leaked managed shells";
-        Console.WriteLine(str);
-        ret.AppendLine(str);
-        
-        var leakedTypesSorted = leakedTypes.OrderByDescending(kvp => kvp.Value).ToArray();
-        
-        str = $"Leaked types by count: \n{string.Join("\n", leakedTypesSorted.Select(kvp => $"{kvp.Value} x {kvp.Key}"))}";
-        ret.AppendLine(str);
-        
+        Console.WriteLine();
+        Console.WriteLine();
+        ret.AppendLine().AppendLine();
+
+        AppendToLog(ret, $"Finished detection in {(DateTime.Now - detectStart).TotalMilliseconds} ms. {leakSummary.NumLeaked} of those are leaked managed shells");
+
+        AppendToLog(ret, leakSummary.GetLeakedTypesSorted());
+        AppendToLog(ret, leakSummary.GetLeakingUnityObjectsSorted());
+        AppendToLog(ret, leakSummary.GetLeakingLeakingShellsSorted());
+
         File.WriteAllText("leaked_objects.txt", ret.ToString());
     }
 
-   
+    private static void AppendToLog(StringBuilder log, string str) {
+        Console.WriteLine(str);
+        Console.WriteLine();
+        log.AppendLine(str).AppendLine();
+    }
 }
